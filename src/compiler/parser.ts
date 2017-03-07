@@ -1059,7 +1059,7 @@ namespace ts {
             return finishNode(node);
         }
 
-        function canParseSemicolon() {
+        function canParseSemicolon(): boolean {
             // If there's a real semicolon, then we can always parse it out.
             if (token() === SyntaxKind.SemicolonToken) {
                 return true;
@@ -1239,6 +1239,7 @@ namespace ts {
                 if (token() === SyntaxKind.DefaultKeyword) {
                     return lookAhead(nextTokenIsClassOrFunctionOrAsync);
                 }
+                //TODO: this is silly -- check against variuos token kinds, then check for various kinds in `canFollowModifier`.
                 return token() !== SyntaxKind.AsteriskToken && token() !== SyntaxKind.AsKeyword && token() !== SyntaxKind.OpenBraceToken && canFollowModifier();
             }
             if (token() === SyntaxKind.DefaultKeyword) {
@@ -2373,14 +2374,14 @@ namespace ts {
         }
 
         function isTypeMemberStart(): boolean {
-            let idToken: SyntaxKind;
             // Return true if we have the start of a signature member
             if (token() === SyntaxKind.OpenParenToken || token() === SyntaxKind.LessThanToken) {
                 return true;
             }
+            let idToken: boolean;
             // Eat up all modifiers, but hold on to the last one in case it is actually an identifier
             while (isModifierKind(token())) {
-                idToken = token();
+                idToken = true;
                 nextToken();
             }
             // Index signatures and computed property names are type members
@@ -2389,7 +2390,7 @@ namespace ts {
             }
             // Try to get the first property-like token following all modifiers
             if (isLiteralPropertyName()) {
-                idToken = token();
+                idToken = true;
                 nextToken();
             }
             // If we were able to get any potential identifier, check that it is
@@ -2444,7 +2445,7 @@ namespace ts {
             return members;
         }
 
-        function isStartOfMappedType() {
+        function isStartOfMappedType(): boolean {
             nextToken();
             if (token() === SyntaxKind.ReadonlyKeyword) {
                 nextToken();
@@ -2452,7 +2453,7 @@ namespace ts {
             return token() === SyntaxKind.OpenBracketToken && nextTokenIsIdentifier() && nextToken() === SyntaxKind.InKeyword;
         }
 
-        function parseMappedTypeParameter() {
+        function parseMappedTypeParameter(): TypeParameterDeclaration {
             const node = <TypeParameterDeclaration>createNode(SyntaxKind.TypeParameter);
             node.name = parseIdentifier();
             parseExpected(SyntaxKind.InKeyword);
@@ -2460,7 +2461,7 @@ namespace ts {
             return finishNode(node);
         }
 
-        function parseMappedType() {
+        function parseMappedType(): MappedTypeNode {
             const node = <MappedTypeNode>createNode(SyntaxKind.MappedType);
             parseExpected(SyntaxKind.OpenBraceToken);
             node.readonlyToken = parseOptionalToken(SyntaxKind.ReadonlyKeyword);
@@ -2497,7 +2498,7 @@ namespace ts {
             return finishNode(node);
         }
 
-        function parseKeywordAndNoDot(): TypeNode {
+        function parseKeywordAndNoDot(): TypeNode | undefined {
             const node = parseTokenNode<TypeNode>();
             return token() === SyntaxKind.DotToken ? undefined : node;
         }
@@ -2524,6 +2525,7 @@ namespace ts {
                 case SyntaxKind.NeverKeyword:
                 case SyntaxKind.ObjectKeyword:
                     // If these are followed by a dot, then parse these out as a dotted type reference instead.
+                    //TODO: why these specifically? why not for any identifier?
                     const node = tryParse(parseKeywordAndNoDot);
                     return node || parseTypeReference();
                 case SyntaxKind.StringLiteral:
@@ -5281,8 +5283,8 @@ namespace ts {
          *
          * In such situations, 'permitInvalidConstAsModifier' should be set to true.
          */
-        function parseModifiers(permitInvalidConstAsModifier?: boolean): NodeArray<Modifier> {
-            let modifiers: NodeArray<Modifier>;
+        function parseModifiers(permitInvalidConstAsModifier?: boolean): NodeArray<Modifier> | undefined {
+            let modifiers: NodeArray<Modifier> | undefined;
             while (true) {
                 const modifierStart = scanner.getStartPos();
                 const modifierKind = token();
