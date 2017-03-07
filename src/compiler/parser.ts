@@ -2244,7 +2244,7 @@ namespace ts {
             return requireCompleteParameterList ? undefined : createMissingList<ParameterDeclaration>();
         }
 
-        function parseTypeMemberSemicolon() {
+        function parseTypeMemberSemicolon(): void {
             // We allow type members to be separated by commas or (possibly ASI) semicolons.
             // First check if it was a comma.  If so, we're done with the member.
             if (parseOptional(SyntaxKind.CommaToken)) {
