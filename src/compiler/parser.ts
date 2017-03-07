@@ -2183,7 +2183,7 @@ namespace ts {
         }
 
         function fillSignature(
-            returnToken: SyntaxKind,
+            returnToken: SyntaxKind.ColonToken | SyntaxKind.EqualsGreaterThanToken,
             yieldContext: boolean,
             awaitContext: boolean,
             requireCompleteParameterList: boolean,
@@ -2619,7 +2619,7 @@ namespace ts {
             return type;
         }
 
-        function parseTypeOperator(operator: SyntaxKind.KeyOfKeyword) {
+        function parseTypeOperator(operator: SyntaxKind.KeyOfKeyword): TypeOperatorNode {
             const node = <TypeOperatorNode>createNode(SyntaxKind.TypeOperator);
             parseExpected(operator);
             node.operator = operator;
@@ -2635,7 +2635,7 @@ namespace ts {
             return parseArrayTypeOrHigher();
         }
 
-        function parseUnionOrIntersectionType(kind: SyntaxKind, parseConstituentType: () => TypeNode, operator: SyntaxKind): TypeNode {
+        function parseUnionOrIntersectionType(kind: SyntaxKind.UnionType | SyntaxKind.IntersectionType, parseConstituentType: () => TypeNode, operator: SyntaxKind.BarToken | SyntaxKind.AmpersandToken): TypeNode {
             parseOptional(operator);
             let type = parseConstituentType();
             if (token() === operator) {
