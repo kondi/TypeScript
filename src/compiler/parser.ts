@@ -2470,6 +2470,7 @@ namespace ts {
             parseExpected(SyntaxKind.CloseBracketToken);
             node.questionToken = parseOptionalToken(SyntaxKind.QuestionToken);
             node.type = parseTypeAnnotation();
+            // May end in either `; }` or just `}`. `parseSemicolon()` does nothing when `token()` is `}`.
             parseSemicolon();
             parseExpected(SyntaxKind.CloseBraceToken);
             return finishNode(node);
