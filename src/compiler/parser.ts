@@ -2727,7 +2727,7 @@ namespace ts {
             }
         }
 
-        function parseTypePredicatePrefix() {
+        function parseTypePredicatePrefix(): Identifier {
             const id = parseIdentifier();
             if (token() === SyntaxKind.IsKeyword && !scanner.hasPrecedingLineBreak()) {
                 nextToken();
