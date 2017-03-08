@@ -1310,7 +1310,7 @@ namespace ts {
                 case ParsingContext.ObjectBindingElements:
                     return token() === SyntaxKind.OpenBracketToken || token() === SyntaxKind.DotDotDotToken || isLiteralPropertyName();
                 case ParsingContext.HeritageClauseElement:
-                    // If we see { } then only consume it as an expression if it is followed by , or {
+                    // If we see { } then only consume it as an expression if it is followed by `,` or `{`
                     // That way we won't consume the body of a class in its heritage clause.
                     if (token() === SyntaxKind.OpenBraceToken) {
                         return lookAhead(isValidHeritageClauseObjectLiteral);
@@ -2114,7 +2114,7 @@ namespace ts {
             return finishNode(node);
         }
 
-        function parseTypeParameters(): NodeArray<TypeParameterDeclaration> {
+        function parseTypeParameters(): NodeArray<TypeParameterDeclaration> | undefined {
             if (token() === SyntaxKind.LessThanToken) {
                 return parseBracketedList(ParsingContext.TypeParameters, parseTypeParameter, SyntaxKind.LessThanToken, SyntaxKind.GreaterThanToken);
             }
@@ -5421,11 +5421,11 @@ namespace ts {
                 : undefined;
         }
 
-        function isImplementsClause() {
+        function isImplementsClause(): boolean {
             return token() === SyntaxKind.ImplementsKeyword && lookAhead(nextTokenIsIdentifierOrKeyword);
         }
 
-        function parseHeritageClauses(): NodeArray<HeritageClause> {
+        function parseHeritageClauses(): NodeArray<HeritageClause> | undefined {
             // ClassTail[Yield,Await] : (Modified) See 14.5
             //      ClassHeritage[?Yield,?Await]opt { ClassBody[?Yield,?Await]opt }
 
@@ -5436,7 +5436,7 @@ namespace ts {
             return undefined;
         }
 
-        function parseHeritageClause() {
+        function parseHeritageClause(): HeritageClause | undefined {
             if (token() === SyntaxKind.ExtendsKeyword || token() === SyntaxKind.ImplementsKeyword) {
                 const node = <HeritageClause>createNode(SyntaxKind.HeritageClause);
                 node.token = token();
@@ -5462,7 +5462,7 @@ namespace ts {
             return token() === SyntaxKind.ExtendsKeyword || token() === SyntaxKind.ImplementsKeyword;
         }
 
-        function parseClassMembers() {
+        function parseClassMembers(): NodeArray<ClassElement> {
             return parseList(ParsingContext.ClassMembers, parseClassElement);
         }
 
