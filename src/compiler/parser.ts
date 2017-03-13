@@ -5586,6 +5586,7 @@ namespace ts {
             return parseModuleOrNamespaceDeclaration(fullStart, decorators, modifiers, flags);
         }
 
+        //move (or inline)
         function isExternalModuleReference() {
             return token() === SyntaxKind.RequireKeyword &&
                 lookAhead(nextTokenIsOpenParen);
@@ -5621,17 +5622,7 @@ namespace ts {
             if (isIdentifier()) {
                 identifier = parseIdentifier();
                 if (token() !== SyntaxKind.CommaToken && token() !== SyntaxKind.FromKeyword) {
-                    // ImportEquals declaration of type:
-                    // import x = require("mod"); or
-                    // import x = M.x;
-                    const importEqualsDeclaration = <ImportEqualsDeclaration>createNode(SyntaxKind.ImportEqualsDeclaration, fullStart);
-                    importEqualsDeclaration.decorators = decorators;
-                    importEqualsDeclaration.modifiers = modifiers;
-                    importEqualsDeclaration.name = identifier;
-                    parseExpected(SyntaxKind.EqualsToken);
-                    importEqualsDeclaration.moduleReference = parseModuleReference();
-                    parseSemicolon();
-                    return addJSDocComment(finishNode(importEqualsDeclaration));
+                    return parseImportEqualsDeclaration(fullStart, decorators, modifiers, identifier);
                 }
             }
 
@@ -5653,6 +5644,20 @@ namespace ts {
             importDeclaration.moduleSpecifier = parseModuleSpecifier();
             parseSemicolon();
             return finishNode(importDeclaration);
+        }
+
+        function parseImportEqualsDeclaration(fullStart: number, decorators: NodeArray<Decorator>, modifiers: NodeArray<Modifier>, identifier: ts.Identifier): ImportEqualsDeclaration {
+            // ImportEquals declaration of type:
+            // import x = require("mod"); or
+            // import x = M.x;
+            const importEqualsDeclaration = <ImportEqualsDeclaration>createNode(SyntaxKind.ImportEqualsDeclaration, fullStart);
+            importEqualsDeclaration.decorators = decorators;
+            importEqualsDeclaration.modifiers = modifiers;
+            importEqualsDeclaration.name = identifier;
+            parseExpected(SyntaxKind.EqualsToken);
+            importEqualsDeclaration.moduleReference = parseModuleReference();
+            parseSemicolon();
+            return addJSDocComment(finishNode(importEqualsDeclaration));
         }
 
         function parseImportClause(identifier: Identifier, fullStart: number) {
@@ -5680,7 +5685,7 @@ namespace ts {
             return finishNode(importClause);
         }
 
-        function parseModuleReference() {
+        function parseModuleReference(): ModuleReference {
             return isExternalModuleReference()
                 ? parseExternalModuleReference()
                 : parseEntityName(/*allowReservedWords*/ false);
