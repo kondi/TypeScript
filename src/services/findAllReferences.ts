@@ -30,6 +30,14 @@ namespace ts.FindAllReferences {
                 entry.kind = def.kind;
                 entry.displayParts = def.displayParts;
             }
+            else if (node.kind === SyntaxKind.ObjectLiteralExpression) {
+                entry.kind == ScriptElementKind.interfaceElement;
+                entry.displayParts = [punctuationPart(SyntaxKind.OpenParenToken), textPart("object literal"), punctuationPart(SyntaxKind.CloseParenToken)]
+            }
+            else if (node.kind === SyntaxKind.ClassExpression) {
+                entry.kind = ScriptElementKind.localClassElement;
+                entry.displayParts = [punctuationPart(SyntaxKind.OpenParenToken), textPart("anonymous local class"), punctuationPart(SyntaxKind.CloseParenToken)]
+            }
             else {
                 entry.kind = getNodeKind(node);
                 entry.displayParts = [];
