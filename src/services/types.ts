@@ -346,21 +346,22 @@ namespace ts {
         caretOffset: number;
     }
 
-    export interface RenameLocation {
+    export interface DocumentSpan {
         textSpan: TextSpan;
         fileName: string;
     }
 
-    export interface ReferenceEntry {
-        textSpan: TextSpan;
-        fileName: string;
-        isWriteAccess: boolean;
-        isDefinition: boolean;
+    export interface RenameLocation extends DocumentSpan {
     }
 
-    export interface ImplementationLocation {
-        textSpan: TextSpan;
-        fileName: string;
+    export interface ReferenceEntry extends DocumentSpan {
+        isWriteAccess?: boolean;
+        isDefinition?: boolean;
+    }
+
+    export interface ImplementationLocation extends ReferenceEntry {
+        kind: string;
+        displayParts: SymbolDisplayPart[];
     }
 
     export interface DocumentHighlights {
