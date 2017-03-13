@@ -1813,7 +1813,7 @@ namespace ts {
         kind: SyntaxKind.ModuleDeclaration;
         parent?: ModuleBody | SourceFile;
         name: ModuleName;
-        body?: ModuleBody | JSDocNamespaceDeclaration | Identifier;
+        body?: ModuleBody | JSDocNamespaceDeclaration;
     }
 
     export type NamespaceBody = ModuleBlock | NamespaceDeclaration;
