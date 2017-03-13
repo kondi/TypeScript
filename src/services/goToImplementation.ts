@@ -21,7 +21,7 @@ namespace ts.GoToImplementation {
                 node, sourceFiles, /*findInStrings*/false, /*findInComments*/false, /*isForRename*/false, /*implementations*/true);
             const result = flatMap(referencedSymbols, symbol => symbol.references);
 
-            return result && result.length > 0 ? result : undefined;
+            return result && result.length > 0 ? <ImplementationLocation[]>result : undefined;
         }
     }
 }

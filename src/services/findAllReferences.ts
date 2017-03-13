@@ -11,17 +11,20 @@ namespace ts.FindAllReferences {
 
     export class FindImplementationsContext extends FindReferencesContext {
         getReferenceEntryFromNode(node: Node): ImplementationLocation {
-            const symbol = this.typeChecker.getSymbolAtLocation(node);
+            const entry = <ImplementationLocation>super.getReferenceEntryFromNode(node);
+            const symbol = this.typeChecker.getSymbolAtLocation(isDeclaration(node) && node.name ? node.name : node);
             if (symbol) {
-                return getDefinition(symbol, node, this.typeChecker);
+                const def = getDefinition(symbol, node, this.typeChecker);
+                entry.kind = def.kind;
+                entry.displayParts = def.displayParts;
             }
             else {
-                const entry = <ImplementationLocation>super.getReferenceEntryFromNode(node);
                 entry.kind = ScriptElementKind.unknown;
                 entry.displayParts = isDeclarationName(node)
-                    ? [ textPart((<Identifier>node).text) ]
+                    ? [textPart((<Identifier>node).text)]
                     : [];
             }
+            return entry;
         }
     }
 
