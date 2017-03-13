@@ -31,7 +31,7 @@ namespace ts.FindAllReferences {
                 entry.displayParts = def.displayParts;
             }
             else if (node.kind === SyntaxKind.ObjectLiteralExpression) {
-                entry.kind == ScriptElementKind.interfaceElement;
+                entry.kind = ScriptElementKind.interfaceElement;
                 entry.displayParts = [punctuationPart(SyntaxKind.OpenParenToken), textPart("object literal"), punctuationPart(SyntaxKind.CloseParenToken)]
             }
             else if (node.kind === SyntaxKind.ClassExpression) {
