@@ -19,10 +19,8 @@ namespace ts.FindAllReferences {
                 entry.displayParts = def.displayParts;
             }
             else {
-                entry.kind = ScriptElementKind.unknown;
-                entry.displayParts = isDeclarationName(node)
-                    ? [textPart((<Identifier>node).text)]
-                    : [];
+                entry.kind = getNodeKind(node);
+                entry.displayParts = [];
             }
             return entry;
         }
