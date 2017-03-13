@@ -17,7 +17,7 @@ namespace ts.DocumentHighlights {
     }
 
     function getSemanticDocumentHighlights(node: Node, typeChecker: TypeChecker, cancellationToken: CancellationToken, sourceFilesToSearch: SourceFile[]): DocumentHighlights[] {
-        const context = new FindAllReferences.FindReferencesContext(typeChecker, cancellationToken);
+        const context = new FindAllReferences.DefaultFindReferencesContext(typeChecker, cancellationToken);
         const referencedSymbols = FindAllReferences.getReferencedSymbolsForNode(context, node, sourceFilesToSearch);
         return referencedSymbols && convertReferencedSymbols(referencedSymbols);
     }

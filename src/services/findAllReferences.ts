@@ -1,17 +1,29 @@
 /* @internal */
 namespace ts.FindAllReferences {
 
-    export class FindReferencesContext {
+    export interface FindReferencesContext<T extends DocumentSpan> {
+        readonly typeChecker: TypeChecker;
+        readonly cancellationToken: CancellationToken;
+        getReferenceEntryFromNode(node: Node): T;
+        getReferenceEntryForSpanInFile(fileName: string, span: TextSpan): T;
+    }
+
+    export class DefaultFindReferencesContext implements FindReferencesContext<ReferenceEntry>  {
         constructor(readonly typeChecker: TypeChecker, readonly cancellationToken: CancellationToken) {
         }
         getReferenceEntryFromNode(node: Node): ReferenceEntry {
             return getReferenceEntryFromNode(node);
         }
+        getReferenceEntryForSpanInFile(fileName: string, textSpan: TextSpan): ReferenceEntry {
+            return { textSpan, fileName, isWriteAccess: false, isDefinition: false };
+        }
     }
 
-    export class FindImplementationsContext extends FindReferencesContext {
+    export class FindImplementationsContext implements FindReferencesContext<ImplementationLocation> {
+        constructor(readonly typeChecker: TypeChecker, readonly cancellationToken: CancellationToken) {
+        }
         getReferenceEntryFromNode(node: Node): ImplementationLocation {
-            const entry = <ImplementationLocation>super.getReferenceEntryFromNode(node);
+            const entry = <ImplementationLocation>getReferenceEntryFromNode(node);
             const symbol = this.typeChecker.getSymbolAtLocation(isDeclaration(node) && node.name ? node.name : node);
             if (symbol) {
                 const def = getDefinition(symbol, node, this.typeChecker);
@@ -24,18 +36,21 @@ namespace ts.FindAllReferences {
             }
             return entry;
         }
+        getReferenceEntryForSpanInFile(fileName: string, textSpan: TextSpan): ImplementationLocation {
+            return { textSpan, fileName, kind: ScriptElementKind.unknown, displayParts: [] };
+        }
     }
 
     export function findReferencedSymbols(typeChecker: TypeChecker, cancellationToken: CancellationToken, sourceFiles: SourceFile[], sourceFile: SourceFile, position: number, findInStrings: boolean, findInComments: boolean, isForRename: boolean): ReferencedSymbol[] | undefined {
         const node = getTouchingPropertyName(sourceFile, position, /*includeJsDocComment*/ true);
-        return getReferencedSymbolsForNode(new FindReferencesContext(typeChecker, cancellationToken), node, sourceFiles, findInStrings, findInComments, isForRename);
+        return getReferencedSymbolsForNode(new DefaultFindReferencesContext(typeChecker, cancellationToken), node, sourceFiles, findInStrings, findInComments, isForRename);
     }
 
     export function convertReferences(referenceSymbols: ReferencedSymbol[]): ReferenceEntry[] {
         return referenceSymbols && flatMap(referenceSymbols, r => r.references);
     }
 
-    export function getReferencedSymbolsForNode(context: FindReferencesContext, node: Node, sourceFiles: SourceFile[], findInStrings?: boolean, findInComments?: boolean, isForRename?: boolean, implementations?: boolean): ReferencedSymbol[] | undefined {
+    export function getReferencedSymbolsForNode<T extends DocumentSpan>(context: FindReferencesContext<T>, node: Node, sourceFiles: SourceFile[], findInStrings?: boolean, findInComments?: boolean, isForRename?: boolean, implementations?: boolean): ReferencedSymbolOf<T>[] | undefined {
         if (!implementations) {
             const special = getReferencedSymbolsSpecial(node, sourceFiles, context);
             if (special) {
@@ -76,7 +91,7 @@ namespace ts.FindAllReferences {
         // Compute the meaning from the location and the symbol it references
         const searchMeaning = getIntersectingMeaningFromDeclarations(getMeaningFromLocation(node), declarations);
 
-        const result: ReferencedSymbol[] = [];
+        const result: ReferencedSymbolOf<T>[] = [];
         // Maps from a symbol ID to the ReferencedSymbol entry in 'result'.
         const symbolToIndex: number[] = [];
         const inheritsFromCache: Map<boolean> = createMap<boolean>();
@@ -113,10 +128,9 @@ namespace ts.FindAllReferences {
     }
 
     /** getReferencedSymbols for special node kinds. */
-    function getReferencedSymbolsSpecial(node: Node, sourceFiles: SourceFile[], context: FindReferencesContext): ReferencedSymbol[] | undefined {
-        const { cancellationToken } = context;
+    function getReferencedSymbolsSpecial<T extends DocumentSpan>(node: Node, sourceFiles: SourceFile[], context: FindReferencesContext<T>): ReferencedSymbolOf<T>[] | undefined {
         if (isTypeKeyword(node.kind)) {
-            return getAllReferencesForKeyword(sourceFiles, node.kind, cancellationToken);
+            return getAllReferencesForKeyword(context, sourceFiles, node.kind);
         }
 
         // Labels
@@ -380,8 +394,8 @@ namespace ts.FindAllReferences {
         return positions;
     }
 
-    function getLabelReferencesInNode(container: Node, targetLabel: Identifier, context: FindReferencesContext): ReferencedSymbol[] {
-        const references: ReferenceEntry[] = [];
+    function getLabelReferencesInNode<T extends DocumentSpan>(container: Node, targetLabel: Identifier, context: FindReferencesContext<T>): ReferencedSymbolOf<T>[] {
+        const references: T[] = [];
         const sourceFile = container.getSourceFile();
         const labelName = targetLabel.text;
         const { cancellationToken } = context;
@@ -433,12 +447,13 @@ namespace ts.FindAllReferences {
         }
     }
 
-    function getAllReferencesForKeyword(sourceFiles: SourceFile[], keywordKind: ts.SyntaxKind, cancellationToken: CancellationToken): ReferencedSymbol[] {
+    function getAllReferencesForKeyword<T extends DocumentSpan>(context: FindReferencesContext<T>, sourceFiles: SourceFile[], keywordKind: ts.SyntaxKind): ReferencedSymbolOf<T>[] {
+        const { cancellationToken } = context;
         const name = tokenToString(keywordKind);
-        const references: ReferenceEntry[] = [];
+        const references: T[] = [];
         for (const sourceFile of sourceFiles) {
             cancellationToken.throwIfCancellationRequested();
-            addReferencesForKeywordInFile(sourceFile, keywordKind, name, cancellationToken, references);
+            addReferencesForKeywordInFile(sourceFile, keywordKind, name, context, references);
         }
 
         if (!references.length) return undefined;
@@ -456,18 +471,14 @@ namespace ts.FindAllReferences {
         return [{ definition, references }];
     }
 
-    function addReferencesForKeywordInFile(sourceFile: SourceFile, kind: SyntaxKind, searchText: string, cancellationToken: CancellationToken, references: Push<ReferenceEntry>): void {
+    function addReferencesForKeywordInFile<T extends DocumentSpan>(sourceFile: SourceFile, kind: SyntaxKind, searchText: string, context: FindReferencesContext<T>, references: Push<T>): void {
+        const { cancellationToken } = context;
         const possiblePositions = getPossibleSymbolReferencePositions(sourceFile, searchText, sourceFile.getStart(), sourceFile.getEnd(), cancellationToken);
         for (const position of possiblePositions) {
             cancellationToken.throwIfCancellationRequested();
             const referenceLocation = getTouchingPropertyName(sourceFile, position);
             if (referenceLocation.kind === kind) {
-                references.push({
-                    textSpan: createTextSpanFromNode(referenceLocation),
-                    fileName: sourceFile.fileName,
-                    isWriteAccess: false,
-                    isDefinition: false,
-                });
+                references.push(context.getReferenceEntryForSpanInFile(sourceFile.fileName, createTextSpanFromNode(referenceLocation)));
             }
         }
     }
@@ -476,17 +487,17 @@ namespace ts.FindAllReferences {
          * tuple of(searchSymbol, searchText, searchLocation, and searchMeaning).
         * searchLocation: a node where the search value
         */
-    function getReferencesInNode(container: Node,
+    function getReferencesInNode<T extends DocumentSpan>(container: Node,
         searchSymbol: Symbol,
         searchText: string,
         searchLocation: Node,
         searchMeaning: SemanticMeaning,
         findInStrings: boolean,
         findInComments: boolean,
-        result: ReferencedSymbol[],
+        result: ReferencedSymbolOf<T>[],
         symbolToIndex: number[],
         implementations: boolean,
-        context: FindReferencesContext,
+        context: FindReferencesContext<T>,
         searchSymbols: Symbol[],
         inheritsFromCache: Map<boolean>): void {
 
@@ -515,12 +526,7 @@ namespace ts.FindAllReferences {
                     // 'FindReferences' will just filter out these results.
                     result.push({
                         definition: undefined,
-                        references: [{
-                            fileName: sourceFile.fileName,
-                            textSpan: createTextSpan(position, searchText.length),
-                            isWriteAccess: false,
-                            isDefinition: false
-                        }]
+                        references: [context.getReferenceEntryForSpanInFile(sourceFile.fileName, createTextSpan(position, searchText.length))]
                     });
                 }
                 continue;
@@ -604,7 +610,7 @@ namespace ts.FindAllReferences {
             }
         }
 
-        function getReferencedSymbol(symbol: Symbol): ReferencedSymbol {
+        function getReferencedSymbol(symbol: Symbol): ReferencedSymbolOf<T> {
             const symbolId = getSymbolId(symbol);
             let index = symbolToIndex[symbolId];
             if (index === undefined) {
@@ -687,7 +693,7 @@ namespace ts.FindAllReferences {
         return result;
     }
 
-    function getImplementationReferenceEntryForNode(refNode: Node, result: ReferenceEntry[], context: FindReferencesContext): void {
+    function getImplementationReferenceEntryForNode<T extends DocumentSpan>(refNode: Node, result: T[], context: FindReferencesContext<T>): void {
         // Check if we found a function/propertyAssignment/method with an implementation or initializer
         if (isDeclarationName(refNode) && isImplementation(refNode.parent)) {
             result.push(context.getReferenceEntryFromNode(refNode.parent));
@@ -735,7 +741,7 @@ namespace ts.FindAllReferences {
         // Because we are returning the implementation locations and not the identifier locations,
         // duplicate entries would be returned here as each of the type references is part of
         // the same implementation. For that reason, check before we add a new entry
-        function maybeAdd(a: ReferenceEntry) {
+        function maybeAdd(a: T) {
             if (!forEach(result, b => a.fileName === b.fileName && a.textSpan.start === b.textSpan.start && a.textSpan.length === b.textSpan.length)) {
                 result.push(a);
             }
@@ -874,7 +880,7 @@ namespace ts.FindAllReferences {
         }
     }
 
-    function getReferencesForSuperKeyword(superKeyword: Node, context: FindReferencesContext): ReferencedSymbol[] {
+    function getReferencesForSuperKeyword<T extends DocumentSpan>(superKeyword: Node, context: FindReferencesContext<T>): ReferencedSymbolOf<T>[] {
         let searchSpaceNode = getSuperContainer(superKeyword, /*stopOnFunctions*/ false);
         if (!searchSpaceNode) {
             return undefined;
@@ -897,7 +903,7 @@ namespace ts.FindAllReferences {
                 return undefined;
         }
 
-        const references: ReferenceEntry[] = [];
+        const references: T[] = [];
         const { typeChecker, cancellationToken } = context;
 
         const sourceFile = searchSpaceNode.getSourceFile();
@@ -925,7 +931,7 @@ namespace ts.FindAllReferences {
         return [{ definition, references }];
     }
 
-    function getReferencesForThisKeyword(thisOrSuperKeyword: Node, sourceFiles: SourceFile[], context: FindReferencesContext): ReferencedSymbol[] {
+    function getReferencesForThisKeyword<T extends DocumentSpan>(thisOrSuperKeyword: Node, sourceFiles: SourceFile[], context: FindReferencesContext<T>): ReferencedSymbolOf<T>[] {
         let searchSpaceNode = getThisContainer(thisOrSuperKeyword, /* includeArrowFunctions */ false);
         const { typeChecker, cancellationToken } = context;
 
@@ -961,7 +967,7 @@ namespace ts.FindAllReferences {
                 return undefined;
         }
 
-        const references: ReferenceEntry[] = [];
+        const references: T[] = [];
 
         let possiblePositions: number[];
         if (searchSpaceNode.kind === SyntaxKind.SourceFile) {
@@ -994,7 +1000,7 @@ namespace ts.FindAllReferences {
             references: references
         }];
 
-        function getThisReferencesInFile(sourceFile: SourceFile, searchSpaceNode: Node, possiblePositions: number[], result: ReferenceEntry[]): void {
+        function getThisReferencesInFile(sourceFile: SourceFile, searchSpaceNode: Node, possiblePositions: number[], result: T[]): void {
             forEach(possiblePositions, position => {
                 cancellationToken.throwIfCancellationRequested();
 
@@ -1036,7 +1042,7 @@ namespace ts.FindAllReferences {
         }
     }
 
-    function getReferencesForStringLiteral(node: StringLiteral, sourceFiles: SourceFile[], context: FindReferencesContext): ReferencedSymbol[] {
+    function getReferencesForStringLiteral<T extends DocumentSpan>(node: StringLiteral, sourceFiles: SourceFile[], context: FindReferencesContext<T>): ReferencedSymbolOf<T>[] {
         const { typeChecker, cancellationToken } = context;
         const type = getStringLiteralTypeForNode(node, typeChecker);
 
@@ -1045,7 +1051,7 @@ namespace ts.FindAllReferences {
             return undefined;
         }
 
-        const references: ReferenceEntry[] = [];
+        const references: T[] = [];
 
         for (const sourceFile of sourceFiles) {
             const possiblePositions = getPossibleSymbolReferencePositions(sourceFile, type.text, sourceFile.getStart(), sourceFile.getEnd(), cancellationToken);
@@ -1065,7 +1071,7 @@ namespace ts.FindAllReferences {
             references: references
         }];
 
-        function getReferencesForStringLiteralInFile(sourceFile: SourceFile, searchType: Type, possiblePositions: number[], references: ReferenceEntry[]): void {
+        function getReferencesForStringLiteralInFile(sourceFile: SourceFile, searchType: Type, possiblePositions: number[], references: T[]): void {
             for (const position of possiblePositions) {
                 cancellationToken.throwIfCancellationRequested();
 
@@ -1389,7 +1395,7 @@ namespace ts.FindAllReferences {
         }
     }
 
-    export function getReferenceEntriesForShorthandPropertyAssignment(node: Node, context: FindReferencesContext, result: ReferenceEntry[]): void {
+    export function getReferenceEntriesForShorthandPropertyAssignment<T extends DocumentSpan>(node: Node, context: FindReferencesContext<T>, result: ReferenceEntry[]): void {
         const { typeChecker } = context;
         const refSymbol = typeChecker.getSymbolAtLocation(node);
         const shorthandSymbol = typeChecker.getShorthandAssignmentValueSymbol(refSymbol.valueDeclaration);

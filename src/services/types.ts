@@ -359,7 +359,7 @@ namespace ts {
         isDefinition?: boolean;
     }
 
-    export interface ImplementationLocation extends ReferenceEntry {
+    export interface ImplementationLocation extends DocumentSpan {
         kind: string;
         displayParts: SymbolDisplayPart[];
     }
@@ -469,9 +469,12 @@ namespace ts {
         displayParts: SymbolDisplayPart[];
     }
 
-    export interface ReferencedSymbol {
+    export interface ReferencedSymbolOf<T extends DocumentSpan> {
         definition: ReferencedSymbolDefinitionInfo;
-        references: ReferenceEntry[];
+        references: T[];
+    }
+
+    export interface ReferencedSymbol extends ReferencedSymbolOf<ReferenceEntry> {
     }
 
     export enum SymbolDisplayPartKind {
