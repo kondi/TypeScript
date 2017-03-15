@@ -1,10 +1,10 @@
 /* @internal */
 namespace ts.codefix.extractMethod {
     export type RangeToExtract = Expression | Statement[];
-    export type Scope = FunctionLikeDeclaration | SourceFile;
+    export type Scope = FunctionLikeDeclaration | SourceFile | ModuleBlock | ClassDeclaration | ClassExpression;
     export interface ExtractResultForScope {
         readonly scope: Scope;
-        readonly changes: TextChange[];
+        readonly changes: FileTextChanges[];
     }
 
     export function getRangeToExtract(sourceFile: SourceFile, span: TextSpan): RangeToExtract | undefined {
@@ -164,7 +164,7 @@ namespace ts.codefix.extractMethod {
         const scopes: Scope[] = [];
         let current: Node = isArray(range) ? firstOrUndefined(range) : range;
         while (current) {
-            if (isFunctionLike(current) || isSourceFile(current)) {
+            if (isFunctionLike(current) || isSourceFile(current) || isModuleBlock(current)) {
                 scopes.push(current);
             }
             current = current.parent;
@@ -172,84 +172,199 @@ namespace ts.codefix.extractMethod {
         return scopes;
     }
 
-    export function extractRange(range: RangeToExtract, sourceFile: SourceFile, program: Program, cancellationToken: CancellationToken): ExtractResultForScope[] {
+    export function extractRange(range: RangeToExtract, sourceFile: SourceFile, context: CodeFixContext): ExtractResultForScope[] {
         const scopes = collectEnclosingScopes(range);
         const enclosingTextRange = getEnclosingTextRange(range, sourceFile);
-
-        const { target, readsForScopes, writesForScopes } = collectReadsAndWrites(range, scopes, program.getTypeChecker(), enclosingTextRange);
+        const { target, usagesPerScope } = collectReadsAndWrites(range, scopes, enclosingTextRange, sourceFile, context);
+        context.cancellationToken.throwIfCancellationRequested();
+        return usagesPerScope.map((x, i) => extractFunctionInScope(target, scopes[i], x, context))
     }
 
-    function isTargetOfRead(n: Identifier) {
-        if (!n.parent) {
-            return false;
+    export function extractFunctionInScope(node: Node, scope: Scope, usagesInScope: Map<UsageEntry>, context: CodeFixContext): ExtractResultForScope {
+        const changeTracker = textChanges.ChangeTracker.fromCodeFixContext(context);
+        // TODO: analyze types of usages and introduce type parameters
+        // TODO: extract/save information if function has unconditional return/throw/etc..
+        // TODO: generate unique function name
+        const functionName = "newFunction";
+        const parameters: ParameterDeclaration[] = [];
+        let writes: UsageEntry[];
+        usagesInScope.forEach((value, key) => {
+            const paramDecl = createParameter(
+                /*decorators*/ undefined,
+                /*modifiers*/ undefined,
+                /*dotDotDotToken*/ undefined,
+                /*name*/ key,
+                /*questionToken*/ undefined,
+                createKeywordTypeNode(SyntaxKind.AnyKeyword), // TODO: use real type
+                );
+            parameters.push(paramDecl);
+            if (value.usage === Usage.Write) {
+                (writes || (writes = [])).push(value);
+            }
+        });
+        const body = transformFunctionBody(node);
+        let newFunction: MethodDeclaration | FunctionDeclaration;
+        if (isClassLike(scope)) {
+            newFunction = createMethod(
+                /*decorators*/ undefined,
+                /*modifiers*/ undefined,     // TODO: put async if extracted method uses await
+                /*asteriskToken*/ undefined, // TODO: put asterisk if extracted method has yield
+                functionName,
+                /*typeParameters*/ undefined, // TODO: derive type parameters from parameter types
+                parameters,
+                createKeywordTypeNode(SyntaxKind.AnyKeyword), // TODO: use real type
+                body
+            );
         }
-        if (isQualifiedName(n.parent)) {
-            return n === n.parent.left;
+        else {
+            newFunction = createFunctionDeclaration(
+                /*decorators*/ undefined,
+                /*modifiers*/ undefined,     // TODO: put async if extracted method uses await
+                /*asteriskToken*/ undefined, // TODO: put asterisk if extracted method has yield
+                functionName,
+                /*typeParameters*/ undefined, // TODO: derive type parameters from parameter types
+                parameters,
+                createKeywordTypeNode(SyntaxKind.AnyKeyword), // TODO: use real type
+                body
+            );
         }
-        else if (isPropertyAccessExpression(n.parent)) {
-            return n === n.parent.expression;
+        return {
+            scope,
+            changes: changeTracker.getChanges() 
+        };
+
+        function transformFunctionBody(n: Node): Block {
+            if (isBlock(n) && !writes) {
+                return n;
+            }
+            const statements = isBlock(n) ? n.statements : [isStatement(n) ? n : createStatement(<Expression>n)];
+            if (writes) {
+                statements.push(createReturn(createObjectLiteral([
+                    // TODO: propagate writes back
+                ])));
+            }
+            return createBlock(statements);
         }
-        return true;
+    }
+
+    function isModuleBlock(n: Node): n is ModuleBlock {
+        return n.kind === SyntaxKind.ModuleBlock;
     }
 
     function getEnclosingTextRange(range: RangeToExtract, sourceFile: SourceFile): TextRange {
         return isArray(range)
             ? { pos: range[0].getStart(sourceFile), end: lastOrUndefined(range).getEnd() }
             : range;
-    }    
+    }
 
-    function collectReadsAndWrites(range: RangeToExtract, scopes: Scope[], checker: TypeChecker, enclosingTextRange: TextRange) {
-        const readsForScopes = Array<Map<void>>(scopes.length);
-        const writesForScopes = Array<Map<void>>(scopes.length);
+    const enum Usage {
+        // value should be passed to extracted method
+        Read  = 1,
+        // value should be passed to extracted method and propagated back
+        Write = 2
+    }
+
+    interface UsageEntry {
+        readonly usage: Usage;
+        readonly symbol: Symbol;
+    }
+
+    function collectReadsAndWrites(
+        range: RangeToExtract,
+        scopes: Scope[],
+        enclosingTextRange: TextRange,
+        sourceFile: SourceFile,
+        context: CodeFixContext) {
+
+        context.cancellationToken.throwIfCancellationRequested();
+        const checker = context.program.getTypeChecker();
+
+        const usagesPerScope = Array<Map<UsageEntry>>(scopes.length);
+        const seenUsages = createMap<Usage>();
+
+        let valueUsage = Usage.Read;
 
         const target = isArray(range) ? createBlock(range) : range;
 
         forEachChild(target, collectUsages);
 
-        return { target, readsForScopes, writesForScopes }
-
+        return { target, usagesPerScope }
 
         function collectUsages(n: Node) {
             if (isAssignmentExpression(n)) {
-                visitLHS(n.left);
+                const savedValueUsage = valueUsage;
+                valueUsage = Usage.Write;
+                collectUsages(n.left);
+                valueUsage = savedValueUsage;
+
                 collectUsages(n.right);
             }
             else if (isUnaryExpressionWithWrite(n)) {
-                visitLHS(n.operand);
+                const savedValueUsage = valueUsage;
+                valueUsage = Usage.Write;
+                collectUsages(n.operand);
+                valueUsage = savedValueUsage;
             }
-            else if (isIdentifier(n) && isTargetOfRead(n)) {
-                recordRead(n);
+            else if (isIdentifier(n)) {
+                if (!n.parent) {
+                    return;
+                }
+                if (isQualifiedName(n.parent) && n !== n.parent.left) {
+                    return;
+                }
+                if ((isPropertyAccessExpression(n.parent) || isElementAccessExpression(n.parent)) && n !== n.parent.expression) {
+                    return ;
+                }
+                if (isPartOfTypeNode(n)) {
+                    // TODO: check if node is accessible in scope and report an error if it is not
+                }
+                else {
+                    recordUsage(n, valueUsage);
+                }
             }
             else {
                 forEachChild(n, collectUsages);
             }
         }
 
-        function visitLHS(n: Node) {
-
-        }
-
-        function recordRead(n: Identifier) {
+        function recordUsage(n: Identifier, usage: Usage) {
             var symbol = checker.getSymbolAtLocation(n);
             if (!symbol) {
                 return;
             }
-            for (let i = 0; i < scopes.length; i++) {
-                let reads = readsForScopes[i];
-                if (reads && reads.has(n.text)) {
-                    continue;
-                }
-                const scope = scopes[i];
-                if (symbol.valueDeclaration && !rangeContainsRange(scope, symbol.valueDeclaration)) {
-                    if (!reads) {
-                        readsForScopes[i] = reads = createMap<void>();
+            const symbolId = getSymbolId(symbol).toString();
+            const lastUsage = seenUsages.get(symbolId);
+            if (lastUsage && lastUsage >= usage) {
+                return;
+            }
+
+            seenUsages.set(symbolId, usage);
+            if (lastUsage) {
+                for (const perScope of usagesPerScope) {
+                    if (perScope.has(n.text)) {
+                        perScope.set(n.text, { usage, symbol });
                     }
-                    reads.set(n.text, undefined);
+                }
+                return;
+            }
+            // find first declaration in this file
+            const declInFile = find(symbol.getDeclarations(), d => d.getSourceFile() === sourceFile);
+            if (!declInFile) {
+                return;
+            }
+            if (rangeContainsRange(enclosingTextRange, declInFile)) {
+                // declaration is located in range to be extracted - do nothing
+                return;
+            }
+            const declContainer = getEnclosingBlockScopeContainer(declInFile);
+            for (let i = 0; i < scopes.length; i++) {
+                const scope = scopes[i];
+                // in order for declaration to be visible in scope block scope container should match or enclose the scope
+                if (rangeContainsRange(declContainer, scope)) {
+                    const perScope = usagesPerScope[i] || (usagesPerScope[i] = createMap<UsageEntry>());
+                    perScope.set(n.text, { usage, symbol });
                 }
             }
-        }
-
-        function recordWrite(n: Identifier) {
         }
 
         function isUnaryExpressionWithWrite(n: Node): n is PrefixUnaryExpression | PostfixUnaryExpression {
@@ -262,6 +377,36 @@ namespace ts.codefix.extractMethod {
                 default:
                     return false;
             }
+        }
+    }
+
+    function getParentNodeInSpan(n: Node, file: SourceFile, span: TextSpan): Node {
+        while (n) {
+            if (!n.parent) {
+                return undefined;
+            }
+            if (isSourceFile(n.parent) || !spanContainsNode(span, n.parent, file)) {
+                return n;
+            }
+
+            n = n.parent;
+        }
+    }
+
+    function spanContainsNode(span: TextSpan, node: Node, file: SourceFile): boolean {
+        return textSpanContainsPosition(span, node.getStart(file)) &&
+            node.getEnd() <= textSpanEnd(span);
+    }
+
+    function isBlockLike(n: Node): n is BlockLike {
+        switch (n.kind) {
+            case SyntaxKind.Block:
+            case SyntaxKind.SourceFile:
+            case SyntaxKind.ModuleBlock:
+            case SyntaxKind.CaseClause:
+                return true;
+            default:
+                return false;
         }
     }
 }
