@@ -1,5 +1,6 @@
-﻿/// <reference path="../../factory.ts" />
+/// <reference path="../../factory.ts" />
 /// <reference path="../../visitor.ts" />
+/// <reference path="../destructuring.ts" />
 
 /*@internal*/
 namespace ts {
@@ -54,9 +55,7 @@ namespace ts {
          * @param node The SourceFile node.
          */
         function transformSourceFile(node: SourceFile) {
-            if (isDeclarationFile(node)
-                || !(isExternalModule(node)
-                    || compilerOptions.isolatedModules)) {
+            if (isDeclarationFile(node) || !(isExternalModule(node) || compilerOptions.isolatedModules)) {
                 return node;
             }
 
@@ -73,6 +72,14 @@ namespace ts {
             return aggregateTransformFlags(updated);
         }
 
+
+        function shouldEmitUnderscoreUnderscoreESModule() {
+            if (!currentModuleInfo.exportEquals && isExternalModule(currentSourceFile)) {
+                return true;
+            }
+            return false;
+        }
+
         /**
          * Transforms a SourceFile into a CommonJS module.
          *
@@ -84,17 +91,19 @@ namespace ts {
             const statements: Statement[] = [];
             const statementOffset = addPrologueDirectives(statements, node.statements, /*ensureUseStrict*/ !compilerOptions.noImplicitUseStrict, sourceElementVisitor);
 
-            if (!currentModuleInfo.exportEquals) {
+            if (shouldEmitUnderscoreUnderscoreESModule()) {
                 append(statements, createUnderscoreUnderscoreESModule());
             }
 
-            append(statements, visitNode(currentModuleInfo.externalHelpersImportDeclaration, sourceElementVisitor, isStatement, /*optional*/ true));
+            append(statements, visitNode(currentModuleInfo.externalHelpersImportDeclaration, sourceElementVisitor, isStatement));
             addRange(statements, visitNodes(node.statements, sourceElementVisitor, isStatement, statementOffset));
-            addRange(statements, endLexicalEnvironment());
             addExportEqualsIfNeeded(statements, /*emitAsReturn*/ false);
+            addRange(statements, endLexicalEnvironment());
 
             const updated = updateSourceFileNode(node, setTextRange(createNodeArray(statements), node.statements));
             if (currentModuleInfo.hasExportStarsToExportValues) {
+                // If we have any `export * from ...` declarations
+                // we need to inform the emitter to add the __export helper.
                 addEmitHelper(updated, exportStarHelper);
             }
             return updated;
@@ -375,20 +384,20 @@ namespace ts {
             const statements: Statement[] = [];
             const statementOffset = addPrologueDirectives(statements, node.statements, /*ensureUseStrict*/ !compilerOptions.noImplicitUseStrict, sourceElementVisitor);
 
-            if (!currentModuleInfo.exportEquals) {
+            if (shouldEmitUnderscoreUnderscoreESModule()) {
                 append(statements, createUnderscoreUnderscoreESModule());
             }
 
             // Visit each statement of the module body.
-            append(statements, visitNode(currentModuleInfo.externalHelpersImportDeclaration, sourceElementVisitor, isStatement, /*optional*/ true));
+            append(statements, visitNode(currentModuleInfo.externalHelpersImportDeclaration, sourceElementVisitor, isStatement));
             addRange(statements, visitNodes(node.statements, sourceElementVisitor, isStatement, statementOffset));
+
+            // Append the 'export =' statement if provided.
+            addExportEqualsIfNeeded(statements, /*emitAsReturn*/ true);
 
             // End the lexical environment for the module body
             // and merge any new lexical declarations.
             addRange(statements, endLexicalEnvironment());
-
-            // Append the 'export =' statement if provided.
-            addExportEqualsIfNeeded(statements, /*emitAsReturn*/ true);
 
             const body = createBlock(statements, /*multiLine*/ true);
             if (currentModuleInfo.hasExportStarsToExportValues) {
@@ -1149,7 +1158,7 @@ namespace ts {
                         createIdentifier("__esModule"),
                         createLiteral(true)
                     )
-                )
+                );
             }
             else {
                 statement = createStatement(
@@ -1334,6 +1343,7 @@ namespace ts {
                 if (externalHelpersModuleName) {
                     return createPropertyAccess(externalHelpersModuleName, node);
                 }
+
                 return node;
             }
 

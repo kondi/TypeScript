@@ -1,5 +1,6 @@
 ///<reference path='extractMethod.ts' />
 /// <reference path="fixClassIncorrectlyImplementsInterface.ts" />
+/// <reference path="fixAddMissingMember.ts" />
 /// <reference path="fixClassDoesntImplementInheritedAbstractMember.ts" />
 /// <reference path="fixClassSuperMustPrecedeThisAccess.ts" />
 /// <reference path="fixConstructorForDerivedNeedSuperCall.ts" />

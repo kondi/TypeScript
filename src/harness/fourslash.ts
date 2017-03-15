@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) Microsoft Corporation.  All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,6 +21,10 @@
 
 namespace FourSlash {
     ts.disableIncrementalParsing = false;
+
+    function normalizeNewLines(s: string) {
+        return s.replace(/\r\n/g, "\n");
+    }
 
     // Represents a parsed source file with metadata
     export interface FourSlashFile {
@@ -263,6 +267,20 @@ namespace FourSlash {
                 // Create map between fileName and its content for easily looking up when resolveReference flag is specified
                 this.inputFiles.set(file.fileName, file.content);
                 if (ts.getBaseFileName(file.fileName).toLowerCase() === "tsconfig.json") {
+                    const configJson = ts.parseConfigFileTextToJson(file.fileName, file.content);
+                    if (configJson.config === undefined) {
+                        throw new Error(`Failed to parse test tsconfig.json: ${configJson.error.messageText}`);
+                    }
+
+                    // Extend our existing compiler options so that we can also support tsconfig only options
+                    if (configJson.config.compilerOptions) {
+                        const baseDirectory = ts.normalizePath(ts.getDirectoryPath(file.fileName));
+                        const tsConfig = ts.convertCompilerOptionsFromJson(configJson.config.compilerOptions, baseDirectory, file.fileName);
+
+                        if (!tsConfig.errors || !tsConfig.errors.length) {
+                            compilationOptions = ts.extend(compilationOptions, tsConfig.options);
+                        }
+                    }
                     configFileName = file.fileName;
                 }
 
@@ -571,7 +589,7 @@ namespace FourSlash {
         }
 
         private getGoToDefinition(): ts.DefinitionInfo[] {
-            return this.languageService.getDefinitionAtPosition(this.activeFile.fileName, this.currentCaretPosition)
+            return this.languageService.getDefinitionAtPosition(this.activeFile.fileName, this.currentCaretPosition);
         }
 
         public verifyGoToType(arg0: any, endMarkerNames?: string | string[]) {
@@ -912,7 +930,7 @@ namespace FourSlash {
             function rangeToReferenceEntry(r: Range) {
                 let { isWriteAccess, isDefinition } = (r.marker && r.marker.data) || { isWriteAccess: false, isDefinition: false };
                 isWriteAccess = !!isWriteAccess; isDefinition = !!isDefinition;
-                return { fileName: r.fileName, textSpan: { start: r.start, length: r.end - r.start }, isWriteAccess, isDefinition }
+                return { fileName: r.fileName, textSpan: { start: r.start, length: r.end - r.start }, isWriteAccess, isDefinition };
             }
         }
 
@@ -1944,8 +1962,7 @@ namespace FourSlash {
 
         public verifyCurrentFileContent(text: string) {
             const actual = this.getFileContent(this.activeFile.fileName);
-            const replaceNewlines = (str: string) => str.replace(/\r\n/g, "\n");
-            if (replaceNewlines(actual) !== replaceNewlines(text)) {
+            if (normalizeNewLines(actual) !== normalizeNewLines(text)) {
                 throw new Error("verifyCurrentFileContent\n" +
                     "\tExpected: \"" + text + "\"\n" +
                     "\t  Actual: \"" + actual + "\"");
@@ -2108,7 +2125,7 @@ namespace FourSlash {
          * Because codefixes are only applied on the working file, it is unsafe
          * to apply this more than once (consider a refactoring across files).
          */
-        public verifyRangeAfterCodeFix(expectedText: string, errorCode?: number, includeWhiteSpace?: boolean) {
+        public verifyRangeAfterCodeFix(expectedText: string, includeWhiteSpace?: boolean, errorCode?: number, index?: number) {
             const ranges = this.getRanges();
             if (ranges.length !== 1) {
                 this.raiseError("Exactly one range should be specified in the testfile.");
@@ -2116,13 +2133,13 @@ namespace FourSlash {
 
             const fileName = this.activeFile.fileName;
 
-            this.applyCodeFixActions(fileName, this.getCodeFixActions(fileName, errorCode));
+            this.applyCodeAction(fileName, this.getCodeFixActions(fileName, errorCode), index);
 
             const actualText = this.rangeText(ranges[0]);
 
             const result = includeWhiteSpace
-                ? actualText === expectedText
-                : this.removeWhitespace(actualText) === this.removeWhitespace(expectedText)
+                ? normalizeNewLines(actualText) === normalizeNewLines(expectedText)
+                : this.removeWhitespace(actualText) === this.removeWhitespace(expectedText);
 
             if (!result) {
                 this.raiseError(`Actual text doesn't match expected text. Actual:\n'${actualText}'\nExpected:\n'${expectedText}'`);
@@ -2141,7 +2158,7 @@ namespace FourSlash {
         public verifyFileAfterCodeFix(expectedContents: string, fileName?: string) {
             fileName = fileName ? fileName : this.activeFile.fileName;
 
-            this.applyCodeFixActions(fileName, this.getCodeFixActions(fileName));
+            this.applyCodeAction(fileName, this.getCodeFixActions(fileName));
 
             const actualContents: string = this.getFileContent(fileName);
             if (this.removeWhitespace(actualContents) !== this.removeWhitespace(expectedContents)) {
@@ -2159,7 +2176,7 @@ namespace FourSlash {
                     start: diagnostic.start,
                     length: diagnostic.length,
                     code: diagnostic.code
-                }
+                };
             });
             const dedupedDiagnositcs = ts.deduplicate(diagnosticsForCodeFix, ts.equalOwnProperties);
 
@@ -2171,7 +2188,7 @@ namespace FourSlash {
                     continue;
                 }
 
-                const newActions = this.languageService.getCodeFixesAtPosition(fileName, diagnostic.start, diagnostic.length, [diagnostic.code]);
+                const newActions = this.languageService.getCodeFixesAtPosition(fileName, diagnostic.start, diagnostic.length, [diagnostic.code], this.formatCodeSettings);
                 if (newActions && newActions.length) {
                     actions = actions ? actions.concat(newActions) : newActions;
                 }
@@ -2179,12 +2196,20 @@ namespace FourSlash {
             return actions;
         }
 
-        private applyCodeFixActions(fileName: string, actions: ts.CodeAction[]): void {
-            if (!(actions && actions.length === 1)) {
-                this.raiseError(`Should find exactly one codefix, but ${actions ? actions.length : "none"} found.`);
+        private applyCodeAction(fileName: string, actions: ts.CodeAction[], index?: number): void {
+            if (index === undefined) {
+                if (!(actions && actions.length === 1)) {
+                    this.raiseError(`Should find exactly one codefix, but ${actions ? actions.length : "none"} found.`);
+                }
+                index = 0;
+            }
+            else {
+                if (!(actions && actions.length >= index + 1)) {
+                    this.raiseError(`Should find at least ${index + 1} codefix(es), but ${actions ? actions.length : "none"} found.`);
+                }
             }
 
-            const fileChanges = ts.find(actions[0].changes, change => change.fileName === fileName);
+            const fileChanges = ts.find(actions[index].changes, change => change.fileName === fileName);
             if (!fileChanges) {
                 this.raiseError("The CodeFix found doesn't provide any changes in this file.");
             }
@@ -2226,22 +2251,23 @@ namespace FourSlash {
 
             if (expected === undefined) {
                 if (actual) {
-                    this.raiseError(name + " failed - expected no template but got {newText: \"" + actual.newText + "\" caretOffset: " + actual.caretOffset + "}");
+                    this.raiseError(`${name} failed - expected no template but got {newText: "${actual.newText}", caretOffset: ${actual.caretOffset}}`);
                 }
 
                 return;
             }
             else {
                 if (actual === undefined) {
-                    this.raiseError(name + " failed - expected the template {newText: \"" + actual.newText + "\" caretOffset: " + actual.caretOffset + "} but got nothing instead");
+                    this.raiseError(`${name} failed - expected the template {newText: "${expected.newText}", caretOffset: "${expected.caretOffset}"} but got nothing instead`);
+                    
                 }
 
                 if (actual.newText !== expected.newText) {
-                    this.raiseError(name + " failed - expected insertion:\n" + this.clarifyNewlines(expected.newText) + "\nactual insertion:\n" + this.clarifyNewlines(actual.newText));
+                    this.raiseError(`${name} failed - expected insertion:\n"${this.clarifyNewlines(expected.newText)}"\nactual insertion:\n"${this.clarifyNewlines(actual.newText)}"`);
                 }
 
                 if (actual.caretOffset !== expected.caretOffset) {
-                    this.raiseError(name + " failed - expected caretOffset: " + expected.caretOffset + ",\nactual caretOffset:" + actual.caretOffset);
+                    this.raiseError(`${name} failed - expected caretOffset: ${expected.caretOffset}\nactual caretOffset:${actual.caretOffset}`);
                 }
             }
         }
@@ -3521,8 +3547,8 @@ namespace FourSlashInterface {
             this.DocCommentTemplate(/*expectedText*/ undefined, /*expectedOffset*/ undefined, /*empty*/ true);
         }
 
-        public rangeAfterCodeFix(expectedText: string, errorCode?: number, includeWhiteSpace?: boolean): void {
-            this.state.verifyRangeAfterCodeFix(expectedText, errorCode, includeWhiteSpace);
+        public rangeAfterCodeFix(expectedText: string, includeWhiteSpace?: boolean, errorCode?: number, index?: number): void {
+            this.state.verifyRangeAfterCodeFix(expectedText, includeWhiteSpace, errorCode, index);
         }
 
         public importFixAtPosition(expectedTextArray: string[], errorCode?: number): void {
