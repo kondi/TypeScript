@@ -1,21 +1,10 @@
 /* @internal */
 namespace ts.codefix.extractMethod {
-    registerCodeFix({
-        errorCodes: [Diagnostics.Extract_method.code],
-        getCodeActions: context => extractMethod(context)
-    });
-
     export type RangeToExtract = Expression | Statement[];
-
     export type Scope = FunctionLikeDeclaration | SourceFile;
-
-    function extractMethod(context: CodeFixContext): CodeAction[] | undefined {
-        const range = getRangeToExtract(context.sourceFile, context.span);
-        return range && extractRange(range, context.sourceFile, context.program.getTypeChecker()); 
-    }
-
-    function getDescription(_range: RangeToExtract, _scope: Scope) {
-        return "";
+    export interface ExtractResultForScope {
+        readonly scope: Scope;
+        readonly changes: TextChange[];
     }
 
     export function getRangeToExtract(sourceFile: SourceFile, span: TextSpan): RangeToExtract | undefined {
@@ -84,16 +73,6 @@ namespace ts.codefix.extractMethod {
                 const savedPermittedJumps = permittedJumps;
                 if (n.parent) {
                     switch (n.parent.kind) {
-                        case SyntaxKind.ForStatement:
-                        case SyntaxKind.ForInStatement:
-                        case SyntaxKind.ForOfStatement:
-                        case SyntaxKind.WhileStatement:
-                        case SyntaxKind.DoStatement:
-                            if ((<ForStatement | ForInStatement | ForOfStatement | WhileStatement | DoStatement>n.parent).statement === n) {
-                                // allow unlabeled break/continue inside loops
-                                permittedJumps |= PermittedJumps.Break | PermittedJumps.Continue;
-                            }
-                            break;
                         case SyntaxKind.IfStatement:
                             if ((<IfStatement>n.parent).thenStatement === n || (<IfStatement>n.parent).elseStatement === n) {
                                 // forbid all jumps inside thenStatement or elseStatement 
@@ -116,6 +95,14 @@ namespace ts.codefix.extractMethod {
                             if ((<CaseClause>n).expression !== n) {
                                 // allow unlabeled break inside case clauses
                                 permittedJumps |= PermittedJumps.Break;
+                            }
+                            break;
+                        default:
+                            if (isIterationStatement(n.parent, /*lookInLabeledStatements*/ false)) {
+                                if ((<IterationStatement>n.parent).statement === n) {
+                                    // allow unlabeled break/continue inside loops
+                                    permittedJumps |= PermittedJumps.Break | PermittedJumps.Continue;
+                                }
                             }
                             break;
                     }
@@ -170,64 +157,6 @@ namespace ts.codefix.extractMethod {
                 permittedJumps = savedPermittedJumps;
             }
         }
-
-
-
-        // const nullLexicalEnvironment: LexicalEnvironment = {
-        //     startLexicalEnvironment: noop,
-        //     endLexicalEnvironment: () => emptyArray
-        // };
-
-        // function extractMethodInScope(range: RangeToExtract, _scope: Node, checker: TypeChecker): CodeAction {
-        //     if (!isArray(range)) {
-        //         range = [createStatement(range)];
-        //     }
-
-        //     // compute combined range covered by individual entries in RangeToExtract
-        //     // TODO: this is not dependent on scope and can be lifted
-        //     //const combinedRange = range.reduce((p, c) => p ? createRange(p.pos, c.end) : c, <TextRange>undefined);
-
-        //     const array = visitNodes(createNodeArray(range), visitor, isStatement);
-        //     let typeParameters: TypeParameterDeclaration[];
-        //     let parameters: ParameterDeclaration[];
-        //     let modifiers: Modifier[];
-        //     let asteriskToken: Token<SyntaxKind.AsteriskToken>;
-        //     let returnType: TypeNode;
-
-        //     const subtree = createFunctionDeclaration(
-        //         /*decorators*/ undefined,
-        //         modifiers,
-        //         asteriskToken,
-        //         createUniqueName("newFunction"),
-        //         typeParameters,
-        //         parameters,
-        //         returnType,
-        //         createBlock(array));
-
-        //     // TODO:print the tree
-        //     if (subtree) {
-
-        //     }
-        //     return undefined;
-
-        //     // walk the tree, collect:
-        //     // - variables that flow in
-        //     // - variables as RHS of assignments
-        //     // - variable declarations
-        //     function visitor(n: Node): VisitResult<Node> {
-        //         switch (n.kind) {
-        //             case SyntaxKind.Identifier:
-        //                 if (isPartOfExpression(n)) {
-        //                     const symbol = checker.getSymbolAtLocation(n);
-        //                     if (symbol && symbol.valueDeclaration) {
-        //                         // parameters
-        //                     }
-        //                 }
-        //                 break;
-        //         }
-        //         return visitEachChild(n, visitor, nullLexicalEnvironment);
-        //     }
-        // }
     }
 
     export function collectEnclosingScopes(range: RangeToExtract) {
@@ -243,144 +172,96 @@ namespace ts.codefix.extractMethod {
         return scopes;
     }
 
-    const nullTransformationContext: TransformationContext = {
+    export function extractRange(range: RangeToExtract, sourceFile: SourceFile, program: Program, cancellationToken: CancellationToken): ExtractResultForScope[] {
+        const scopes = collectEnclosingScopes(range);
+        const enclosingTextRange = getEnclosingTextRange(range, sourceFile);
 
-    };
-
-    function unaryExpressionHasWrite(n: Node): boolean {
-        switch (n.kind) {
-            case SyntaxKind.PostfixUnaryExpression:
-                return true;
-            case SyntaxKind.PrefixUnaryExpression:
-                return (<PrefixUnaryExpression>n).operator === SyntaxKind.PlusPlusToken ||
-                    (<PrefixUnaryExpression>n).operator === SyntaxKind.MinusMinusToken;
-            default:
-                return false;
-        }
+        const { target, readsForScopes, writesForScopes } = collectReadsAndWrites(range, scopes, program.getTypeChecker(), enclosingTextRange);
     }
 
-    export function extractRange(range: RangeToExtract, sourceFile: SourceFile, program: Program, cancellationToken: CancellationToken): CodeAction[] {
-        // 1. collect scopes where new function can be placed
-        const scopes = collectEnclosingScopes(range);
-        const enclosingRange = getEnclosingTextRange(range, sourceFile);
-        
-        const checker = program.getTypeChecker();
-        // for every scope - list of values that flow into the range
-        const flowOut = new Array<Symbol[]>(scopes.length);
-        // for every scope - list of values that flow out of the range
-        const flowIn = new Array<Symbol[]>(scopes.length);
-        // for every scope - variable declarations that reside in the range but were used outside
-        const visibleDeclarations = new Array<Symbol[]>(scopes.length);
-        // set of processed symbols that were referenced in range as reads
-        const processedReads = createMap<Symbol>();
-        // set of processed symbol that were referenced in range as writes
-        const processedWrites = createMap<Symbol>();
-        const references = createMap<ReferencedSymbol[]>();
-
-        let extractedFunctionBody: Statement;
-        
-        if (isArray(range)) {
-            // list of statements
-            extractedFunctionBody = createBlock(visitNodes(createNodeArray(range), visitor, isStatement));
+    function isTargetOfRead(n: Identifier) {
+        if (!n.parent) {
+            return false;
         }
-        else {
-            // single expression - extracted into function with a return
-            const visited = visitNode(range, visitor, isExpression);
-            // TODO: return should also include values that flows out
-            extractedFunctionBody = createReturn(visited);
+        if (isQualifiedName(n.parent)) {
+            return n === n.parent.left;
         }
-
-        return;
-
-        function findReferences(symbol: Symbol) {
-            const result = references[symbol.id];
-            return result || (references[symbol.id] = FindAllReferences.findReferencedSymbols(checker, cancellationToken,
-                program.getSourceFiles(), symbol.valueDeclaration.getSourceFile(), symbol.valueDeclaration.end,
-               /*findInStrings*/ false, /*findInComments*/ false));
+        else if (isPropertyAccessExpression(n.parent)) {
+            return n === n.parent.expression;
         }
-
-        function visitor(n: Node): Node {
-            switch (n.kind) {
-                case SyntaxKind.Identifier:
-                    if (isPartOfExpression(n)) {
-                        const symbol = checker.getSymbolAtLocation(n);
-                        // no symbol, no value declaration or value declaration is in the range being extracted - skip it
-                        if (!symbol || !symbol.valueDeclaration || rangeContainsRange(enclosingRange, symbol.valueDeclaration)) {
-                            return n;
-                        }
-                        if (isAssignmentTarget(n)) {
-                            if (symbol.id in processedWrites) {
-                                return n;
-                            }
-                            processedWrites[symbol.id] = symbol;
-                            const references = findReferences(symbol);
-                            for (let i = 0; i < scopes.length; i++) {
-                                const current = scopes[i];
-                                for (const refSymbol of references) {
-                                    for (const ref of refSymbol.references) {
-                                        // if scope 
-                                    }
-                                    ref.references[0]
-                                }
-                            }
-                            // TODO: record writes
-                        }
-                        else {
-                            if (symbol.id in processedReads) {
-                                return n;
-                            }
-                            
-                            // TODO: process read
-                        }
-                    }
-                    else if (isPartOfTypeNode(n)) {
-
-                    }
-                    break;
-                case SyntaxKind.ThisKeyword:
-                    break;
-                case SyntaxKind.VariableDeclaration:
-                    break;
-                default:
-                    return visitEachChild(n, visitor, nullTransformationContext);
-            }
-        }
+        return true;
     }
 
     function getEnclosingTextRange(range: RangeToExtract, sourceFile: SourceFile): TextRange {
         return isArray(range)
             ? { pos: range[0].getStart(sourceFile), end: lastOrUndefined(range).getEnd() }
             : range;
-    }
+    }    
 
-    function spanContainsNode(span: TextSpan, node: Node, file: SourceFile): boolean {
-        return textSpanContainsPosition(span, node.getStart(file)) &&
-            node.getEnd() <= textSpanEnd(span);
-    }
+    function collectReadsAndWrites(range: RangeToExtract, scopes: Scope[], checker: TypeChecker, enclosingTextRange: TextRange) {
+        const readsForScopes = Array<Map<void>>(scopes.length);
+        const writesForScopes = Array<Map<void>>(scopes.length);
 
-    function getParentNodeInSpan(n: Node, file: SourceFile, span: TextSpan): Node {
-        while (n) {
-            if (!n.parent) {
-                return undefined;
+        const target = isArray(range) ? createBlock(range) : range;
+
+        forEachChild(target, collectUsages);
+
+        return { target, readsForScopes, writesForScopes }
+
+
+        function collectUsages(n: Node) {
+            if (isAssignmentExpression(n)) {
+                visitLHS(n.left);
+                collectUsages(n.right);
             }
-            if (isSourceFile(n.parent) || !spanContainsNode(span, n.parent, file)) {
-                return n;
+            else if (isUnaryExpressionWithWrite(n)) {
+                visitLHS(n.operand);
             }
+            else if (isIdentifier(n) && isTargetOfRead(n)) {
+                recordRead(n);
+            }
+            else {
+                forEachChild(n, collectUsages);
+            }
+        }
 
-            n = n.parent;
+        function visitLHS(n: Node) {
+
+        }
+
+        function recordRead(n: Identifier) {
+            var symbol = checker.getSymbolAtLocation(n);
+            if (!symbol) {
+                return;
+            }
+            for (let i = 0; i < scopes.length; i++) {
+                let reads = readsForScopes[i];
+                if (reads && reads.has(n.text)) {
+                    continue;
+                }
+                const scope = scopes[i];
+                if (symbol.valueDeclaration && !rangeContainsRange(scope, symbol.valueDeclaration)) {
+                    if (!reads) {
+                        readsForScopes[i] = reads = createMap<void>();
+                    }
+                    reads.set(n.text, undefined);
+                }
+            }
+        }
+
+        function recordWrite(n: Identifier) {
+        }
+
+        function isUnaryExpressionWithWrite(n: Node): n is PrefixUnaryExpression | PostfixUnaryExpression {
+            switch (n.kind) {
+                case SyntaxKind.PostfixUnaryExpression:
+                    return true;
+                case SyntaxKind.PrefixUnaryExpression:
+                    return (<PrefixUnaryExpression>n).operator === SyntaxKind.PlusPlusToken ||
+                        (<PrefixUnaryExpression>n).operator === SyntaxKind.MinusMinusToken;
+                default:
+                    return false;
+            }
         }
     }
-
-    function isBlockLike(n: Node): n is BlockLike {
-        switch (n.kind) {
-            case SyntaxKind.Block:
-            case SyntaxKind.SourceFile:
-            case SyntaxKind.ModuleBlock:
-            case SyntaxKind.CaseClause:
-                return true;
-            default:
-                return false;
-        }
-    }
-
 }
