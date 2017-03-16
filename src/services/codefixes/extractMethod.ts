@@ -1,6 +1,16 @@
 /* @internal */
 namespace ts.codefix.extractMethod {
-    export type RangeToExtract = Expression | Statement[];
+    export enum RangeFacts {
+        None = 0,
+        HasReturn = 1 << 0,
+        IsGenerator = 1 << 1,
+        IsAsyncFunction = 1 << 2
+    }
+    export interface RangeToExtract {
+        range: Expression | Statement[];
+        facts: RangeFacts;
+
+    } 
     export type Scope = FunctionLikeDeclaration | SourceFile | ModuleBlock | ClassDeclaration | ClassExpression;
     export interface ExtractResultForScope {
         readonly scope: Scope;
@@ -10,6 +20,7 @@ namespace ts.codefix.extractMethod {
     export function getRangeToExtract(sourceFile: SourceFile, span: TextSpan): RangeToExtract | undefined {
         const start = getParentNodeInSpan(getTokenAtPosition(sourceFile, span.start), sourceFile, span);
         const end = getParentNodeInSpan(findTokenOnLeftOfPosition(sourceFile, textSpanEnd(span)), sourceFile, span);
+        let facts = RangeFacts.None;
         if (!start || !end || start.parent !== end.parent) {
             return undefined;
         }
@@ -24,7 +35,7 @@ namespace ts.codefix.extractMethod {
             const statements: Statement[] = [];
             for (const n of (<BlockLike>start.parent).statements) {
                 if (n === start || statements.length) {
-                    if (!canExtractNode(n)) {
+                    if (!checkNode(n)) {
                         return undefined;
                     }
                     statements.push(n);
@@ -33,24 +44,24 @@ namespace ts.codefix.extractMethod {
                     break;
                 }
             }
-            return statements;
+            return { range: statements, facts };
         }
         else {
-            if (!canExtractNode(start)) {
+            if (!checkNode(start)) {
                 return undefined;
             }
             if (isStatement(start)) {
-                return [start];
+                return { range: [start], facts };
             }
             else if (isExpression(start)) {
-                return start;
+                return { range: start, facts };
             }
             else {
                 return undefined;
             }
         }
 
-        function canExtractNode(n: Node): boolean {
+        function checkNode(n: Node): boolean {
             const enum PermittedJumps {
                 None = 0,
                 Break = 1 << 0,
@@ -138,15 +149,24 @@ namespace ts.codefix.extractMethod {
                         if (!(permittedJumps & PermittedJumps.Await)) {
                             canExtract = false;
                         }
+                        else {
+                            facts |= RangeFacts.IsAsyncFunction;
+                        }
                         break;
                     case SyntaxKind.YieldExpression:
                         if (!(permittedJumps & PermittedJumps.Yield)) {
                             canExtract = false;
                         }
+                        else {
+                            facts |= RangeFacts.IsGenerator;
+                        }
                         break;
                     case SyntaxKind.ReturnStatement:
                         if (!(permittedJumps & PermittedJumps.Return)) {
                             canExtract = false;
+                        }
+                        else {
+                            facts |= RangeFacts.HasReturn;
                         }
                         break;
                     default:
@@ -207,9 +227,13 @@ namespace ts.codefix.extractMethod {
         const body = transformFunctionBody(node);
         let newFunction: MethodDeclaration | FunctionDeclaration;
         if (isClassLike(scope)) {
+            const modifiers: Modifier[] = [createToken(SyntaxKind.PrivateKeyword)];
+            if (range.facts & RangeFacts.IsAsyncFunction) {
+                modifiers.push(createToken(SyntaxKind.AsyncKeyword))
+            }
             newFunction = createMethod(
                 /*decorators*/ undefined,
-                /*modifiers*/ undefined,     // TODO: put async if extracted method uses await
+                modifiers,
                 /*asteriskToken*/ undefined, // TODO: put asterisk if extracted method has yield
                 functionName,
                 /*typeParameters*/ undefined, // TODO: derive type parameters from parameter types
@@ -246,11 +270,11 @@ namespace ts.codefix.extractMethod {
                 SyntaxKind.EqualsToken,
                 newNode);
         }
-        if (isArray(range)) {
-            changeTracker.replaceNodeRange(context.sourceFile, range[0], lastOrUndefined(range), newNode);
+        if (isArray(range.range)) {
+            changeTracker.replaceNodeRange(context.sourceFile, range.range[0], lastOrUndefined(range.range), newNode);
         }
         else {
-            changeTracker.replaceNode(context.sourceFile, range, newNode);
+            changeTracker.replaceNode(context.sourceFile, range.range, newNode);
         }
         return {
             scope,
@@ -273,7 +297,8 @@ namespace ts.codefix.extractMethod {
         return n.kind === SyntaxKind.ModuleBlock;
     }
 
-    function getEnclosingTextRange(range: RangeToExtract, sourceFile: SourceFile): TextRange {
+    function getEnclosingTextRange(r: RangeToExtract, sourceFile: SourceFile): TextRange {
+        const range = r.range;
         return isArray(range)
             ? { pos: range[0].getStart(sourceFile), end: lastOrUndefined(range).getEnd() }
             : range;
@@ -306,7 +331,7 @@ namespace ts.codefix.extractMethod {
 
         let valueUsage = Usage.Read;
 
-        const target = isArray(range) ? createBlock(range) : range;
+        const target = isArray(range.range) ? createBlock(range.range) : range.range;
 
         forEachChild(target, collectUsages);
 
