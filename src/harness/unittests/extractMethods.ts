@@ -48,7 +48,7 @@ namespace ts {
                 if (range.name in ranges) {
                     throw new Error(`Duplicate name of range ${range.name}`);
                 }
-                ranges[range.name] = range;
+                ranges.set(range.name, range);
                 pos += 2;
                 lastPos = pos;
                 continue;
@@ -68,12 +68,12 @@ namespace ts {
     function testExtractRange(s: string): void {
         const t = extractTest(s);
         const f = createSourceFile("a.ts", t.source, ScriptTarget.Latest, /*setParentNodes*/ true);
-        const selectionRange = t.ranges["selection"];
+        const selectionRange = t.ranges.get("selection");
         if (!selectionRange) {
             throw new Error(`Test ${s} does not specify selection range`);
         }
         const actualRange = codefix.extractMethod.getRangeToExtract(f, createTextSpanFromBounds(selectionRange.start, selectionRange.end));
-        const expectedRange = t.ranges["extracted"];
+        const expectedRange = t.ranges.get("extracted");
         if (expectedRange) {
             let start: number, end: number;
             if (ts.isArray(actualRange)) {

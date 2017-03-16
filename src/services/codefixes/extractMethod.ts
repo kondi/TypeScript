@@ -177,16 +177,17 @@ namespace ts.codefix.extractMethod {
         const enclosingTextRange = getEnclosingTextRange(range, sourceFile);
         const { target, usagesPerScope } = collectReadsAndWrites(range, scopes, enclosingTextRange, sourceFile, context);
         context.cancellationToken.throwIfCancellationRequested();
-        return usagesPerScope.map((x, i) => extractFunctionInScope(target, scopes[i], x, context))
+        return usagesPerScope.map((x, i) => extractFunctionInScope(target, scopes[i], x, range, context))
     }
 
-    export function extractFunctionInScope(node: Node, scope: Scope, usagesInScope: Map<UsageEntry>, context: CodeFixContext): ExtractResultForScope {
+    export function extractFunctionInScope(node: Node, scope: Scope, usagesInScope: Map<UsageEntry>, range: RangeToExtract, context: CodeFixContext): ExtractResultForScope {
         const changeTracker = textChanges.ChangeTracker.fromCodeFixContext(context);
         // TODO: analyze types of usages and introduce type parameters
         // TODO: extract/save information if function has unconditional return/throw/etc..
         // TODO: generate unique function name
-        const functionName = "newFunction";
+        const functionName = createIdentifier("newFunction");
         const parameters: ParameterDeclaration[] = [];
+        const callArguments: Identifier[] = [];
         let writes: UsageEntry[];
         usagesInScope.forEach((value, key) => {
             const paramDecl = createParameter(
@@ -201,6 +202,7 @@ namespace ts.codefix.extractMethod {
             if (value.usage === Usage.Write) {
                 (writes || (writes = [])).push(value);
             }
+            callArguments.push(createIdentifier(key));
         });
         const body = transformFunctionBody(node);
         let newFunction: MethodDeclaration | FunctionDeclaration;
@@ -228,6 +230,28 @@ namespace ts.codefix.extractMethod {
                 body
             );
         }
+
+        // insert function at the end of the scope
+        changeTracker.insertNodeBefore(context.sourceFile, scope.getLastToken(), newFunction, { suffix: context.newLineCharacter });
+        // replace range with function call
+        let newNode: Expression = createCall(
+            isClassLike(scope) ? createPropertyAccess(createThis(), functionName) : functionName,
+            /*typeArguments*/ undefined,
+            callArguments);
+
+        if (writes) {
+            // propagate writes back
+            newNode = createBinary(createObjectLiteral(
+                writes.map(w => createShorthandPropertyAssignment(w.symbol.name))),
+                SyntaxKind.EqualsToken,
+                newNode);
+        }
+        if (isArray(range)) {
+            changeTracker.replaceNodeRange(context.sourceFile, range[0], lastOrUndefined(range), newNode);
+        }
+        else {
+            changeTracker.replaceNode(context.sourceFile, range, newNode);
+        }
         return {
             scope,
             changes: changeTracker.getChanges() 
@@ -239,9 +263,7 @@ namespace ts.codefix.extractMethod {
             }
             const statements = isBlock(n) ? n.statements : [isStatement(n) ? n : createStatement(<Expression>n)];
             if (writes) {
-                statements.push(createReturn(createObjectLiteral([
-                    // TODO: propagate writes back
-                ])));
+                statements.push(createReturn(createObjectLiteral(writes.map(w => createShorthandPropertyAssignment(w.symbol.name)))));
             }
             return createBlock(statements);
         }
